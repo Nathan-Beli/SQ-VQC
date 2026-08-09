@@ -4,13 +4,14 @@ const {
     GatewayIntentBits, 
     SlashCommandBuilder, 
     ActionRowBuilder, 
+    StringSelectMenuBuilder,
     UserSelectMenuBuilder, 
     ButtonBuilder, 
     ButtonStyle, 
     ComponentType
 } = require('discord.js');
 
-// --- 0. SERVEUR HTTP POUR LE HEALTH CHECK DE L'HÉBERGEUR ---
+// --- 0. SERVEUR HTTP POUR LE HEALTH CHECK ---
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -51,69 +52,49 @@ const ROLES = {
     DCM: "1535988465274064958"
 };
 
-// Matrice des promotions standards
-const PROMOTION_RULES = [
-    { executor: ROLES.SERGENT, from: ROLES.CADET, to: ROLES.AGENT },
-    { executor: ROLES.LIEUTENANT, from: ROLES.AGENT, to: ROLES.CHEF_EQUIPE },
-    { executor: ROLES.CAPITAINE, from: ROLES.CHEF_EQUIPE, to: ROLES.SERGENT },
-    { executor: ROLES.INSPECTEUR, from: ROLES.SERGENT, to: ROLES.LIEUTENANT },
-    { executor: ROLES.INSPECTEUR_CHEF, from: ROLES.LIEUTENANT, to: ROLES.CAPITAINE },
-    { executor: ROLES.DA, from: ROLES.CAPITAINE, to: ROLES.INSPECTEUR }
+// Rôles de promotions attribuables selon qui exécute
+const PROMOTION_MAP = [
+    { executor: ROLES.SERGENT, targetRole: ROLES.AGENT, name: "Agent" },
+    { executor: ROLES.LIEUTENANT, targetRole: ROLES.CHEF_EQUIPE, name: "Chef d'équipe" },
+    { executor: ROLES.CAPITAINE, targetRole: ROLES.SERGENT, name: "Sergent" },
+    { executor: ROLES.INSPECTEUR, targetRole: ROLES.LIEUTENANT, name: "Lieutenant" },
+    { executor: ROLES.INSPECTEUR_CHEF, targetRole: ROLES.CAPITAINE, name: "Capitaine" },
+    { executor: ROLES.DA, targetRole: ROLES.INSPECTEUR, name: "Inspecteur" }
 ];
 
-// Subdivisions managées par leurs Chefs respectifs, le Directeur Adjoint et le Directeur Général
-const SUBDIVISIONS = [
-    { chef: ROLES.CHEF_GTI, role: ROLES.GTI, chefRole: ROLES.CHEF_GTI },
-    { chef: ROLES.CHEF_ENQUETEUR, role: ROLES.ENQUETEUR, chefRole: ROLES.CHEF_ENQUETEUR },
-    { chef: ROLES.CHEF_DCM, role: ROLES.DCM, chefRole: ROLES.CHEF_DCM }
+// Subdivisions
+const SUBDIVISIONS_MAP = [
+    { executor: ROLES.CHEF_GTI, role: ROLES.GTI, name: "GTI" },
+    { executor: ROLES.CHEF_ENQUETEUR, role: ROLES.ENQUETEUR, name: "Enquêteur" },
+    { executor: ROLES.CHEF_DCM, role: ROLES.DCM, name: "DCM" }
 ];
 
-// Hiérarchie Capitaine et plus (pour le bouton Mise à Pied)
-const CAPITAINE_PLUS = [
-    ROLES.CAPITAINE,
-    ROLES.INSPECTEUR,
-    ROLES.INSPECTEUR_CHEF,
-    ROLES.DA,
-    ROLES.DG
+// Chefs de subdivisions (gérés par DA / DG)
+const CHEFS_SUBDIVISIONS = [
+    { role: ROLES.CHEF_GTI, name: "Chef GTI" },
+    { role: ROLES.CHEF_ENQUETEUR, name: "Chef Enquêteur" },
+    { role: ROLES.CHEF_DCM, name: "Chef DCM" }
 ];
 
-// Tous les rôles qui ont le droit de taper /promotion
-const PROMOTION_EXECUTORS = [
-    ROLES.SERGENT,
-    ROLES.LIEUTENANT,
-    ROLES.CAPITAINE,
-    ROLES.INSPECTEUR,
-    ROLES.INSPECTEUR_CHEF,
-    ROLES.DA,
-    ROLES.DG,
-    ROLES.CHEF_GTI,
-    ROLES.CHEF_ENQUETEUR,
-    ROLES.CHEF_DCM
-];
+const CAPITAINE_PLUS = [ROLES.CAPITAINE, ROLES.INSPECTEUR, ROLES.INSPECTEUR_CHEF, ROLES.DA, ROLES.DG];
+const ALL_EXECUTORS = [...new Set([...PROMOTION_MAP.map(p => p.executor), ...SUBDIVISIONS_MAP.map(s => s.executor), ROLES.DG])];
 
-// --- 3. ÉVÉNEMENT INITIALISATION DU BOT ---
+// --- 3. INITIALISATION ---
 client.on('clientReady', async () => {
     console.log(`Bot connecté en tant que ${client.user.tag}`);
-
-    // Enregistrement de la commande slash /promotion
     const command = new SlashCommandBuilder()
         .setName('promotion')
         .setDescription('Gérer les promotions, subdivisions et mises à pied.')
-        .addUserOption(opt => 
-            opt.setName('membre')
-               .setDescription('Le membre à promouvoir ou gérer')
-               .setRequired(true)
-        );
+        .addUserOption(opt => opt.setName('membre').setDescription('Le membre à gérer').setRequired(true));
 
     try {
         await client.application.commands.set([command]);
-        console.log("Commande /promotion enregistrée avec succès.");
     } catch (err) {
-        console.error("Erreur lors de l'enregistrement de la commande :", err);
+        console.error("Erreur enregistrement commande :", err);
     }
 });
 
-// --- 4. ÉVÉNEMENT GESTION DES INTERACTIONS ---
+// --- 4. GESTION DU COMMAND /PROMOTION ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand() && interaction.commandName === 'promotion') {
         const executor = interaction.member;
@@ -123,9 +104,8 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable sur le serveur.", ephemeral: true });
         }
 
-        // 1. Vérification si l'exécuteur a un rôle autorisé à promouvoir/gérer
-        const hasPermission = PROMOTION_EXECUTORS.some(roleId => executor.roles.cache.has(roleId));
-
+        // Vérification permission de base
+        const hasPermission = ALL_EXECUTORS.some(roleId => executor.roles.cache.has(roleId));
         if (!hasPermission) {
             return interaction.reply({ 
                 content: "Vous n'avez pas la permission de faite cette commande", 
@@ -133,149 +113,157 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
-        // 2. Vérification de la présence du rôle "Sûreté du Québec" chez la personne ciblée
+        // Vérification rôle Sûreté du Québec
         if (!target.roles.cache.has(ROLES.SQ)) {
             return interaction.reply({ 
-                content: "❌ Cette personne doit posséder le rôle **Sûreté du Québec** pour recevoir des actions hiérarchiques.", 
+                content: "❌ Cette personne doit posséder le rôle **Sûreté du Québec**.", 
                 ephemeral: true 
             });
         }
 
-        let actionsDone = [];
+        // Construction des options de rôles que l'exécuteur A LE DROIT d'ajouter ou enlever
+        const availableRoles = [];
 
-        // --- 3. PROMOTIONS STANDARDS ---
-        for (const rule of PROMOTION_RULES) {
-            if (executor.roles.cache.has(rule.executor) || executor.roles.cache.has(ROLES.DG)) {
-                if (target.roles.cache.has(rule.from)) {
-                    await target.roles.remove(rule.from);
-                    await target.roles.add(rule.to);
-                    actionsDone.push(`• Promu au grade supérieur : <@&${rule.to}>`);
-                    break;
-                }
+        // 1. Grades hiérarchiques autorisés
+        for (const p of PROMOTION_MAP) {
+            if (executor.roles.cache.has(p.executor) || executor.roles.cache.has(ROLES.DG)) {
+                availableRoles.push({ label: `Grade: ${p.name}`, value: p.targetRole });
             }
         }
 
-        // --- 4. GESTION DES SUBDIVISIONS ET LEURS CHEFS (Chefs de Sub, DA, DG) ---
-        for (const sub of SUBDIVISIONS) {
-            const canManage = executor.roles.cache.has(sub.chef) || 
-                              executor.roles.cache.has(ROLES.DA) || 
-                              executor.roles.cache.has(ROLES.DG);
-
-            if (canManage) {
-                // Basculer le rôle de subdivision (Ajout si absent, Retrait si présent)
-                if (target.roles.cache.has(sub.role)) {
-                    await target.roles.remove(sub.role);
-                    actionsDone.push(`• Retrait du rôle de subdivision <@&${sub.role}>`);
-                } else {
-                    await target.roles.add(sub.role);
-                    actionsDone.push(`• Ajout du rôle de subdivision <@&${sub.role}>`);
-                }
-
-                // Le DG et le DA peuvent également attribuer/retirer les rôles de Chefs de subdivision
-                if (executor.roles.cache.has(ROLES.DG) || executor.roles.cache.has(ROLES.DA)) {
-                    if (target.roles.cache.has(sub.chefRole)) {
-                        await target.roles.remove(sub.chefRole);
-                        actionsDone.push(`• Retrait du rôle Chef de subdivision <@&${sub.chefRole}>`);
-                    } else {
-                        await target.roles.add(sub.chefRole);
-                        actionsDone.push(`• Ajout du rôle Chef de subdivision <@&${sub.chefRole}>`);
-                    }
-                }
+        // 2. Subdivisions autorisées
+        for (const s of SUBDIVISIONS_MAP) {
+            if (executor.roles.cache.has(s.executor) || executor.roles.cache.has(ROLES.DA) || executor.roles.cache.has(ROLES.DG)) {
+                availableRoles.push({ label: `Subdivision: ${s.name}`, value: s.role });
             }
         }
 
-        // --- 5. ATTRIBUTION SUPERVISEUR (Directeur Général seulement) ---
+        // 3. Chefs de Subdivisions (DA & DG)
+        if (executor.roles.cache.has(ROLES.DA) || executor.roles.cache.has(ROLES.DG)) {
+            for (const cs of CHEFS_SUBDIVISIONS) {
+                availableRoles.push({ label: `Poste: ${cs.name}`, value: cs.role });
+            }
+        }
+
+        // 4. Superviseur (DG uniquement)
         if (executor.roles.cache.has(ROLES.DG)) {
-            if (!target.roles.cache.has(ROLES.SUPERVISEUR)) {
-                await target.roles.add(ROLES.SUPERVISEUR);
-                actionsDone.push(`• Attribution du rôle <@&${ROLES.SUPERVISEUR}> (Superviseur)`);
-            }
+            availableRoles.push({ label: `Poste: Superviseur`, value: ROLES.SUPERVISEUR });
         }
 
-        // --- 6. BOUTON MISE À PIED (Capitaine+) ---
-        const isCapitainePlus = CAPITAINE_PLUS.some(roleId => executor.roles.cache.has(roleId));
+        // Dédoublonner les options
+        const uniqueRoles = availableRoles.filter((v, i, a) => a.findIndex(t => t.value === v.value) === i);
+
+        if (uniqueRoles.length === 0) {
+            return interaction.reply({ content: "⚠️ Vous n'avez aucun rôle à gérer pour ce membre.", ephemeral: true });
+        }
+
+        // Création des composants de l'interface (Menu + Bouton Mise à pied si Capitaine+)
         const components = [];
 
+        const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`select_role_${target.id}`)
+            .setPlaceholder('Choisissez le rôle à ajouter ou enlever')
+            .addOptions(uniqueRoles.map(r => ({
+                label: r.label,
+                description: target.roles.cache.has(r.value) ? '▶ Actuellement POSSÉDÉ (Cliquer pour ENLEVER)' : '▶ Actuellement NON POSSÉDÉ (Cliquer pour AJOUTER)',
+                value: r.value
+            })));
+
+        components.push(new ActionRowBuilder().addComponents(selectMenu));
+
+        // Bouton mise à pied
+        const isCapitainePlus = CAPITAINE_PLUS.some(roleId => executor.roles.cache.has(roleId));
         if (isCapitainePlus) {
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('btn_mise_a_pied')
-                    .setLabel('Mise à pied')
-                    .setStyle(ButtonStyle.Danger)
-            );
-            components.push(row);
+            const btn = new ButtonBuilder()
+                .setCustomId(`btn_map_${target.id}`)
+                .setLabel('Mise à pied')
+                .setStyle(ButtonStyle.Danger);
+            components.push(new ActionRowBuilder().addComponents(btn));
         }
 
-        let responseText = actionsDone.length > 0 
-            ? `✅ **Action(s) effectuée(s) sur ${target} :**\n` + actionsDone.join('\n')
-            : `ℹ️ Aucune promotion automatique ou modification de subdivision n'a été appliquée à ${target}.`;
-
-        const responseMessage = await interaction.reply({
-            content: responseText,
+        // Tout le message est ÉPHÉMÈRE (privé)
+        await interaction.reply({
+            content: `⚙️ **Gestion des rôles pour ${target} :**\nChoisissez une action dans le menu ci-dessous.`,
             components: components,
-            fetchReply: true
+            ephemeral: true
         });
-
-        // Collecteur pour le bouton Mise à pied
-        if (isCapitainePlus) {
-            const collector = responseMessage.createMessageComponentCollector({
-                componentType: ComponentType.Button,
-                time: 60000
-            });
-
-            collector.on('collect', async buttonInteraction => {
-                if (buttonInteraction.user.id !== interaction.user.id) {
-                    return buttonInteraction.reply({ content: "Vous ne pouvez pas utiliser ce bouton.", ephemeral: true });
-                }
-
-                const userSelectRow = new ActionRowBuilder().addComponents(
-                    new UserSelectMenuBuilder()
-                        .setCustomId('select_mise_a_pied')
-                        .setPlaceholder('Sélectionnez la personne à mettre à pied')
-                );
-
-                await buttonInteraction.reply({
-                    content: "🚨 **Sélectionnez la personne à qui vous souhaitez retirer TOUS les rôles :**",
-                    components: [userSelectRow],
-                    ephemeral: true
-                });
-            });
-        }
     }
 
-    // --- 5. GESTION DU MENU DÉROULANT DE MISE À PIED ---
-    if (interaction.isUserSelectMenu() && interaction.customId === 'select_mise_a_pied') {
-        const targetId = interaction.values[0];
+    // --- 5. ACTION MENU DÉROULANT : AJOUTER / ENLEVER LE RÔLE SELECTIONNÉ ---
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_role_')) {
+        const targetId = interaction.customId.split('_')[2];
+        const selectedRoleId = interaction.values[0];
         const targetMember = await interaction.guild.members.fetch(targetId);
 
         if (!targetMember) {
             return interaction.reply({ content: "⚠️ Membre introuvable.", ephemeral: true });
         }
 
+        if (targetMember.roles.cache.has(selectedRoleId)) {
+            // Retirer le rôle
+            await targetMember.roles.remove(selectedRoleId);
+            await interaction.reply({
+                content: `✅ Le rôle <@&${selectedRoleId}> a été **retiré** à ${targetMember}.`,
+                ephemeral: true
+            });
+        } else {
+            // Ajouter le rôle
+            await targetMember.roles.add(selectedRoleId);
+            await interaction.reply({
+                content: `✅ Le rôle <@&${selectedRoleId}> a été **ajouté** à ${targetMember}.`,
+                ephemeral: true
+            });
+        }
+    }
+
+    // --- 6. ACTION BOUTON MISE À PIED ---
+    if (interaction.isButton() && interaction.customId.startsWith('btn_map_')) {
+        const targetId = interaction.customId.split('_')[2];
+        
+        const userSelectRow = new ActionRowBuilder().addComponents(
+            new UserSelectMenuBuilder()
+                .setCustomId(`confirm_map_${targetId}`)
+                .setPlaceholder('Sélectionnez la personne à mettre à pied')
+        );
+
+        await interaction.reply({
+            content: "🚨 **Sélectionnez la personne à qui retirer TOUS les rôles :**",
+            components: [userSelectRow],
+            ephemeral: true
+        });
+    }
+
+    // --- 7. ACTION CONFIRMATION MISE À PIED ---
+    if (interaction.isUserSelectMenu() && interaction.customId.startsWith('confirm_map_')) {
+        const selectedUserId = interaction.values[0];
+        const targetMember = await interaction.guild.members.fetch(selectedUserId);
+
+        if (!targetMember) {
+            return interaction.reply({ content: "⚠️ Membre introuvable.", ephemeral: true });
+        }
+
         try {
-            // Retrait de tous les rôles du membre sauf le rôle par défaut (@everyone)
             const rolesToRemove = targetMember.roles.cache.filter(role => role.id !== interaction.guild.id);
             await targetMember.roles.remove(rolesToRemove);
 
             await interaction.reply({
                 content: `💥 **Mise à pied effectuée** : Tous les rôles ont été retirés à ${targetMember}.`,
-                ephemeral: false
+                ephemeral: true
             });
         } catch (error) {
             console.error(error);
             await interaction.reply({
-                content: "❌ Impossible de retirer les rôles. Assurez-vous que le rôle du bot soit positionné au-dessus de tous les autres rôles dans les paramètres de votre serveur.",
+                content: "❌ Impossible de retirer les rôles (Vérifiez la hauteur du rôle du Bot sur Discord).",
                 ephemeral: true
             });
         }
     }
 });
 
-// --- 6. CONNEXION ---
+// --- 8. CONNEXION ---
 const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
-
 if (!token) {
-    console.error("❌ ERREUR: Aucun token trouvé dans les variables d'environnement. Veuillez définir DISCORD_TOKEN ou BOT_TOKEN.");
+    console.error("❌ ERREUR: Aucun token trouvé dans DISCORD_TOKEN ou BOT_TOKEN.");
     process.exit(1);
 }
 
