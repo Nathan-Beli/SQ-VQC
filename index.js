@@ -46,8 +46,8 @@ const ROLES = {
     DCM: "1535988465274064958"
 };
 
-// Liste de TOUS les grades hiérarchiques (utilisée pour remplacer automatiquement l'ancien grade)
-const ALL_GRADES = [
+// Hiérarchie des grades (du plus BAS au plus HAUT) pour comparer les rangs
+const GRADE_HIERARCHY = [
     ROLES.CADET,
     ROLES.AGENT,
     ROLES.CHEF_EQUIPE,
@@ -85,6 +85,17 @@ const CHEFS_SUBDIVISIONS = [
 const CAPITAINE_PLUS = [ROLES.CAPITAINE, ROLES.INSPECTEUR, ROLES.INSPECTEUR_CHEF, ROLES.DA, ROLES.DG];
 const ALL_EXECUTORS = [...new Set([...PROMOTION_MAP.map(p => p.executor), ...SUBDIVISIONS_MAP.map(s => s.executor), ROLES.DG])];
 
+// Fonction d'aide pour obtenir l'indice du grade le plus élevé d'un membre
+function getMemberGradeRank(member) {
+    let highestRank = -1;
+    for (let i = 0; i < GRADE_HIERARCHY.length; i++) {
+        if (member.roles.cache.has(GRADE_HIERARCHY[i])) {
+            highestRank = i; // Retient le rang le plus haut trouvé
+        }
+    }
+    return highestRank;
+}
+
 // --- 3. INITIALISATION DU BOT ---
 client.on('clientReady', async () => {
     console.log(`[BOT] Connecté sous : ${client.user.tag}`);
@@ -114,11 +125,31 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable sur le serveur.", ephemeral: true });
         }
 
-        // Vérification des permissions
+        // 🛑 SÉCURITÉ 1 : Interdiction de s'exécuter la commande sur SOI-MÊME
+        if (executor.id === target.id) {
+            return interaction.reply({ 
+                content: "❌ **Vous ne pouvez pas vous attribuer une promotion à vous-même !**", 
+                ephemeral: true 
+            });
+        }
+
+        // Vérification des permissions de base
         const hasPermission = ALL_EXECUTORS.some(roleId => executor.roles.cache.has(roleId));
         if (!hasPermission) {
             return interaction.reply({ 
                 content: "Vous n'avez pas la permission de faite cette commande", 
+                ephemeral: true 
+            });
+        }
+
+        // 🛑 SÉCURITÉ 2 : Interdiction d'agir sur un membre de grade ÉGAL ou SUPÉRIEUR
+        const executorRank = getMemberGradeRank(executor);
+        const targetRank = getMemberGradeRank(target);
+
+        // Si la personne qui exécute n'est pas DG et que la cible a un grade >= à l'exécuteur
+        if (!executor.roles.cache.has(ROLES.DG) && targetRank >= executorRank && targetRank !== -1) {
+            return interaction.reply({ 
+                content: "❌ **Vous ne pouvez pas modifier les rôles d'un membre ayant un grade égal ou supérieur au vôtre.**", 
                 ephemeral: true 
             });
         }
@@ -167,17 +198,16 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Vous n'avez aucun rôle à attribuer à ce membre.", ephemeral: true });
         }
 
-        // Organiser les boutons par rangées (maximum 5 boutons par rangée Discord)
+        // Organiser les boutons
         const rows = [];
         let currentRow = new ActionRowBuilder();
 
         uniqueButtons.forEach((b, index) => {
             const hasRole = target.roles.cache.has(b.value);
             
-            // Type de bouton : Vert si la personne l'a déjà, Bleu si c'est un nouveau grade, Gris pour subdivision
             let style = ButtonStyle.Secondary;
             if (hasRole) {
-                style = ButtonStyle.Success; // Vert s'il le possède actuellement
+                style = ButtonStyle.Success; // Vert s'il le possède
             } else if (b.isGrade) {
                 style = ButtonStyle.Primary; // Bleu pour les grades
             }
@@ -203,14 +233,13 @@ client.on('interactionCreate', async interaction => {
                 .setLabel('🚨 Mise à pied')
                 .setStyle(ButtonStyle.Danger);
             
-            // Ajouter la mise à pied sur une nouvelle rangée
             rows.push(new ActionRowBuilder().addComponents(btnMap));
         }
 
         const embed = new EmbedBuilder()
             .setColor(0x0055A5)
             .setTitle("🛡️ Gestion de Carrière")
-            .setDescription(`Cliquez sur un bouton ci-dessous pour gérer les rôles de ${target}.\n\n🟢 **Vert** = Rôle qu'il possède déjà\n🔵 **Bleu** = Grade hiérarchique (remplacera automatiquement son ancien grade)`)
+            .setDescription(`Cliquez sur un bouton ci-dessous pour gérer les rôles de ${target}.\n\n🟢 **Vert** = Rôle actuellement possédé\n🔵 **Bleu** = Grade hiérarchique (remplacera l'ancien)`)
             .setTimestamp();
 
         await interaction.reply({
@@ -230,29 +259,34 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable.", ephemeral: true });
         }
 
+        // Sécurité lors du clic : vérifier à nouveau que ce n'est pas soi-même
+        if (interaction.member.id === targetMember.id) {
+            return interaction.reply({ content: "❌ Action impossible sur vous-même.", ephemeral: true });
+        }
+
         const hasRole = targetMember.roles.cache.has(roleId);
 
         if (hasRole) {
-            // S'il l'a déjà, on lui enleve
+            // Retirer le rôle
             await targetMember.roles.remove(roleId);
             return interaction.reply({
                 content: `➖ Le rôle <@&${roleId}> a été **retiré** à ${targetMember}.`,
                 ephemeral: true
             });
         } else {
-            // Si c'est un GRADE, on enlève d'abord tous ses anciens grades (SANS toucher aux subdivisions)
+            // Si c'est un GRADE : Retrait des anciens grades sans toucher aux subdivisions
             if (isGrade) {
-                const oldGrades = targetMember.roles.cache.filter(role => ALL_GRADES.includes(role.id));
+                const oldGrades = targetMember.roles.cache.filter(role => GRADE_HIERARCHY.includes(role.id));
                 for (const [id] of oldGrades) {
                     await targetMember.roles.remove(id);
                 }
             }
 
-            // On ajoute le nouveau rôle / grade
+            // Ajouter le nouveau rôle
             await targetMember.roles.add(roleId);
 
             return interaction.reply({
-                content: `✅ Le rôle/grade <@&${roleId}> a été **attribué** à ${targetMember}.${isGrade ? ' (L\'ancien grade a été supprimé automatiqument).' : ''}`,
+                content: `✅ Le rôle/grade <@&${roleId}> a été **attribué** à ${targetMember}.${isGrade ? ' (L\'ancien grade a été remplacé).' : ''}`,
                 ephemeral: true
             });
         }
@@ -261,6 +295,10 @@ client.on('interactionCreate', async interaction => {
     // --- ACTION BOUTON MISE À PIED ---
     if (interaction.isButton() && interaction.customId.startsWith('btn_map_')) {
         const targetId = interaction.customId.split('_')[2];
+
+        if (interaction.member.id === targetId) {
+            return interaction.reply({ content: "❌ Vous ne pouvez pas vous mettre à pied vous-même !", ephemeral: true });
+        }
 
         const userSelectRow = new ActionRowBuilder().addComponents(
             new UserSelectMenuBuilder()
@@ -284,8 +322,11 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable.", ephemeral: true });
         }
 
+        if (interaction.member.id === targetMember.id) {
+            return interaction.reply({ content: "❌ Vous ne pouvez pas vous mettre à pied vous-même !", ephemeral: true });
+        }
+
         try {
-            // Retrait de TOUS les rôles personnalisés
             const rolesToRemove = targetMember.roles.cache.filter(role => role.id !== interaction.guild.id);
             await targetMember.roles.remove(rolesToRemove);
 
@@ -294,7 +335,6 @@ client.on('interactionCreate', async interaction => {
                 ephemeral: true
             });
 
-            // Publication de l'annonce publique
             const publicAnnounce = new EmbedBuilder()
                 .setColor(0x992D22)
                 .setTitle("📢 Avis Officiel - Mise à Pied")
@@ -306,7 +346,7 @@ client.on('interactionCreate', async interaction => {
         } catch (error) {
             console.error(error);
             await interaction.reply({
-                content: "❌ Impossible de procéder à la mise à pied. Assurez-vous que le rôle du bot se situe au-dessus des autres rôles dans les paramètres Discord.",
+                content: "❌ Impossible de procéder à la mise à pied. Vérifiez la hiérarchie des rôles du Bot sur Discord.",
                 ephemeral: true
             });
         }
