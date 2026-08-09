@@ -1,3 +1,4 @@
+const http = require('http');
 const { 
     Client, 
     GatewayIntentBits, 
@@ -9,6 +10,16 @@ const {
     ComponentType
 } = require('discord.js');
 
+// --- 0. SERVEUR HTTP POUR LE HEALTH CHECK DE L'HÉBERGEUR ---
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Bot Discord SQ en ligne !');
+}).listen(PORT, () => {
+    console.log(`Serveur HTTP en écoute sur le port ${PORT}`);
+});
+
+// --- 1. CONFIGURATION CLIENT DISCORD ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
@@ -16,7 +27,7 @@ const client = new Client({
     ]
 });
 
-// --- LISTE DES IDS DE RÔLES ---
+// --- 2. LISTE DES IDS DE RÔLES ---
 const ROLES = {
     SQ: "1534277079322071060",
     DG: "1534559869959409785",
@@ -80,7 +91,8 @@ const PROMOTION_EXECUTORS = [
     ROLES.CHEF_DCM
 ];
 
-client.on('ready', async () => {
+// --- 3. ÉVÉNEMENT INITIALISATION DU BOT ---
+client.on('clientReady', async () => {
     console.log(`Bot connecté en tant que ${client.user.tag}`);
 
     // Enregistrement de la commande slash /promotion
@@ -101,6 +113,7 @@ client.on('ready', async () => {
     }
 });
 
+// --- 4. ÉVÉNEMENT GESTION DES INTERACTIONS ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand() && interaction.commandName === 'promotion') {
         const executor = interaction.member;
@@ -110,17 +123,17 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable sur le serveur.", ephemeral: true });
         }
 
-        // 1. Vérification si l'exécuteur a un rôle autorisé
+        // 1. Vérification si l'exécuteur a un rôle autorisé à promouvoir/gérer
         const hasPermission = PROMOTION_EXECUTORS.some(roleId => executor.roles.cache.has(roleId));
 
         if (!hasPermission) {
             return interaction.reply({ 
-                content: "❌ Vous n'avez pas la permission de faite cette commande", 
+                content: "Vous n'avez pas la permission de faite cette commande", 
                 ephemeral: true 
             });
         }
 
-        // 2. Vérification de la présence du rôle "Sûreté du Québec" chez le membre ciblé
+        // 2. Vérification de la présence du rôle "Sûreté du Québec" chez la personne ciblée
         if (!target.roles.cache.has(ROLES.SQ)) {
             return interaction.reply({ 
                 content: "❌ Cette personne doit posséder le rôle **Sûreté du Québec** pour recevoir des actions hiérarchiques.", 
@@ -142,14 +155,14 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- 4. GESTION SUBDIVISIONS & CHEFS (Chefs de Sub, DA, DG) ---
+        // --- 4. GESTION DES SUBDIVISIONS ET LEURS CHEFS (Chefs de Sub, DA, DG) ---
         for (const sub of SUBDIVISIONS) {
             const canManage = executor.roles.cache.has(sub.chef) || 
                               executor.roles.cache.has(ROLES.DA) || 
                               executor.roles.cache.has(ROLES.DG);
 
             if (canManage) {
-                // Basculer le rôle de la subdivision (Ajout si absent, Retrait si présent)
+                // Basculer le rôle de subdivision (Ajout si absent, Retrait si présent)
                 if (target.roles.cache.has(sub.role)) {
                     await target.roles.remove(sub.role);
                     actionsDone.push(`• Retrait du rôle de subdivision <@&${sub.role}>`);
@@ -171,7 +184,7 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- 5. RÔLE SUPERVISEUR (DG seulement) ---
+        // --- 5. ATTRIBUTION SUPERVISEUR (Directeur Général seulement) ---
         if (executor.roles.cache.has(ROLES.DG)) {
             if (!target.roles.cache.has(ROLES.SUPERVISEUR)) {
                 await target.roles.add(ROLES.SUPERVISEUR);
@@ -195,7 +208,7 @@ client.on('interactionCreate', async interaction => {
 
         let responseText = actionsDone.length > 0 
             ? `✅ **Action(s) effectuée(s) sur ${target} :**\n` + actionsDone.join('\n')
-            : `ℹ️ Aucune promotion automatique ou modification n'a pu être appliquée à ${target}.`;
+            : `ℹ️ Aucune promotion automatique ou modification de subdivision n'a été appliquée à ${target}.`;
 
         const responseMessage = await interaction.reply({
             content: responseText,
@@ -203,7 +216,7 @@ client.on('interactionCreate', async interaction => {
             fetchReply: true
         });
 
-        // Écouteur pour le bouton Mise à Pied
+        // Collecteur pour le bouton Mise à pied
         if (isCapitainePlus) {
             const collector = responseMessage.createMessageComponentCollector({
                 componentType: ComponentType.Button,
@@ -230,7 +243,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // --- GESTION DU MENU DÉROULANT DE MISE À PIED ---
+    // --- 5. GESTION DU MENU DÉROULANT DE MISE À PIED ---
     if (interaction.isUserSelectMenu() && interaction.customId === 'select_mise_a_pied') {
         const targetId = interaction.values[0];
         const targetMember = await interaction.guild.members.fetch(targetId);
@@ -240,7 +253,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
-            // Retrait de tous les rôles sauf le rôle par défaut (@everyone)
+            // Retrait de tous les rôles du membre sauf le rôle par défaut (@everyone)
             const rolesToRemove = targetMember.roles.cache.filter(role => role.id !== interaction.guild.id);
             await targetMember.roles.remove(rolesToRemove);
 
@@ -251,14 +264,14 @@ client.on('interactionCreate', async interaction => {
         } catch (error) {
             console.error(error);
             await interaction.reply({
-                content: "❌ Une erreur est survenue lors du retrait des rôles (vérifiez la hiérarchie du rôle du bot sur Discord).",
+                content: "❌ Impossible de retirer les rôles. Assurez-vous que le rôle du bot soit positionné au-dessus de tous les autres rôles dans les paramètres de votre serveur.",
                 ephemeral: true
             });
         }
     }
 });
 
-// Récupération du Token depuis les variables d'environnement
+// --- 6. CONNEXION ---
 const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
 
 if (!token) {
