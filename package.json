@@ -1,0 +1,23 @@
+{
+  "name": "bot-surete-du-quebec",
+  "version": "1.0.0",
+  "description": "Bot Discord.js pour la gestion des promotions et subdivisions de la Sûreté du Québec",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "promotion",
+    "sq"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.14.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
