@@ -4,31 +4,26 @@ const {
     GatewayIntentBits, 
     SlashCommandBuilder, 
     ActionRowBuilder, 
-    StringSelectMenuBuilder,
+    StringSelectMenuBuilder, 
     UserSelectMenuBuilder, 
     ButtonBuilder, 
     ButtonStyle, 
-    ComponentType
+    EmbedBuilder 
 } = require('discord.js');
 
-// --- 0. SERVEUR HTTP POUR LE HEALTH CHECK ---
+// --- 0. SERVEUR HTTP POUR LE HEALTH CHECK DE L'HÉBERGEUR ---
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Bot Discord SQ en ligne !');
-}).listen(PORT, () => {
-    console.log(`Serveur HTTP en écoute sur le port ${PORT}`);
-});
+    res.end('Bot SQ en ligne !');
+}).listen(PORT, () => console.log(`[HTTP] Serveur web en écoute sur le port ${PORT}`));
 
-// --- 1. CONFIGURATION CLIENT DISCORD ---
+// --- 1. CLIENT DISCORD ---
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds, 
-        GatewayIntentBits.GuildMembers
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
-// --- 2. LISTE DES IDS DE RÔLES ---
+// --- 2. BASE DE DONNÉES DES RÔLES ET IDENTIFIANTS ---
 const ROLES = {
     SQ: "1534277079322071060",
     DG: "1534559869959409785",
@@ -43,8 +38,8 @@ const ROLES = {
     CADET: "1534559249168859137",
     SUPERVISEUR: "1535988500824989757",
     
-    // Subdivisions & Chefs de Subdivisions
-    CHEF_GTI: "1535988386165162034",
+    // Subdivisions & Chefs
+    CHEF_GTI: "1535998738311422075",
     GTI: "1535988386165162034",
     CHEF_ENQUETEUR: "1535998948605567026",
     ENQUETEUR: "1535988422252961802",
@@ -52,7 +47,7 @@ const ROLES = {
     DCM: "1535988465274064958"
 };
 
-// Rôles de promotions attribuables selon qui exécute
+// Matrice des autorisations de promotion
 const PROMOTION_MAP = [
     { executor: ROLES.SERGENT, targetRole: ROLES.AGENT, name: "Agent" },
     { executor: ROLES.LIEUTENANT, targetRole: ROLES.CHEF_EQUIPE, name: "Chef d'équipe" },
@@ -62,14 +57,12 @@ const PROMOTION_MAP = [
     { executor: ROLES.DA, targetRole: ROLES.INSPECTEUR, name: "Inspecteur" }
 ];
 
-// Subdivisions
 const SUBDIVISIONS_MAP = [
     { executor: ROLES.CHEF_GTI, role: ROLES.GTI, name: "GTI" },
     { executor: ROLES.CHEF_ENQUETEUR, role: ROLES.ENQUETEUR, name: "Enquêteur" },
-    { executor: ROLES.CHEF_DCM, role: ROLES.DCM, name: "DCM" }
+    { executor: ROLES.CHEF_DCM, role: ROLES.DCM, name: "DCM (Crimes Majeurs)" }
 ];
 
-// Chefs de subdivisions (gérés par DA / DG)
 const CHEFS_SUBDIVISIONS = [
     { role: ROLES.CHEF_GTI, name: "Chef GTI" },
     { role: ROLES.CHEF_ENQUETEUR, name: "Chef Enquêteur" },
@@ -79,23 +72,27 @@ const CHEFS_SUBDIVISIONS = [
 const CAPITAINE_PLUS = [ROLES.CAPITAINE, ROLES.INSPECTEUR, ROLES.INSPECTEUR_CHEF, ROLES.DA, ROLES.DG];
 const ALL_EXECUTORS = [...new Set([...PROMOTION_MAP.map(p => p.executor), ...SUBDIVISIONS_MAP.map(s => s.executor), ROLES.DG])];
 
-// --- 3. INITIALISATION ---
+// --- 3. DÉMARRAGE ET ENREGISTREMENT DU COMMAND ---
 client.on('clientReady', async () => {
-    console.log(`Bot connecté en tant que ${client.user.tag}`);
+    console.log(`[BOT] Bot connecté sous : ${client.user.tag}`);
+    
     const command = new SlashCommandBuilder()
         .setName('promotion')
-        .setDescription('Gérer les promotions, subdivisions et mises à pied.')
+        .setDescription('Ouvre le panneau de gestion de carrière et hiérarchie.')
         .addUserOption(opt => opt.setName('membre').setDescription('Le membre à gérer').setRequired(true));
 
     try {
         await client.application.commands.set([command]);
+        console.log('[BOT] Commande /promotion enregistrée.');
     } catch (err) {
-        console.error("Erreur enregistrement commande :", err);
+        console.error('[ERREUR] Enregistrement de la commande :', err);
     }
 });
 
-// --- 4. GESTION DU COMMAND /PROMOTION ---
+// --- 4. GESTION DES INTERACTIONS ---
 client.on('interactionCreate', async interaction => {
+    
+    // --- COMMAND /PROMOTION ---
     if (interaction.isChatInputCommand() && interaction.commandName === 'promotion') {
         const executor = interaction.member;
         const target = interaction.options.getMember('membre');
@@ -104,136 +101,158 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable sur le serveur.", ephemeral: true });
         }
 
-        // Vérification permission de base
+        // Vérification des permissions
         const hasPermission = ALL_EXECUTORS.some(roleId => executor.roles.cache.has(roleId));
         if (!hasPermission) {
             return interaction.reply({ 
-                content: "Vous n'avez pas la permission de faite cette commande", 
+                content: "❌ **Vous n'avez pas la permission de faite cette commande.**", 
                 ephemeral: true 
             });
         }
 
-        // Vérification rôle Sûreté du Québec
+        // Vérification du rôle obligatoire SQ
         if (!target.roles.cache.has(ROLES.SQ)) {
-            return interaction.reply({ 
-                content: "❌ Cette personne doit posséder le rôle **Sûreté du Québec**.", 
-                ephemeral: true 
-            });
+            const errorEmbed = new EmbedBuilder()
+                .setColor(0xED4245)
+                .setTitle("Accès Refusé")
+                .setDescription(`Le membre ${target} doit posséder le rôle <@&${ROLES.SQ}> pour recevoir une promotion ou modification de subdivision.`);
+            
+            return interaction.reply({ embeds: [errorEmbed], ephemeral: true });
         }
 
-        // Construction des options de rôles que l'exécuteur A LE DROIT d'ajouter ou enlever
+        // Filtrage des rôles attribuables
         const availableRoles = [];
 
-        // 1. Grades hiérarchiques autorisés
+        // Grades hiérarchiques
         for (const p of PROMOTION_MAP) {
             if (executor.roles.cache.has(p.executor) || executor.roles.cache.has(ROLES.DG)) {
                 availableRoles.push({ label: `Grade: ${p.name}`, value: p.targetRole });
             }
         }
 
-        // 2. Subdivisions autorisées
+        // Subdivisions
         for (const s of SUBDIVISIONS_MAP) {
             if (executor.roles.cache.has(s.executor) || executor.roles.cache.has(ROLES.DA) || executor.roles.cache.has(ROLES.DG)) {
                 availableRoles.push({ label: `Subdivision: ${s.name}`, value: s.role });
             }
         }
 
-        // 3. Chefs de Subdivisions (DA & DG)
+        // Chefs de subdivisions (DA & DG)
         if (executor.roles.cache.has(ROLES.DA) || executor.roles.cache.has(ROLES.DG)) {
             for (const cs of CHEFS_SUBDIVISIONS) {
                 availableRoles.push({ label: `Poste: ${cs.name}`, value: cs.role });
             }
         }
 
-        // 4. Superviseur (DG uniquement)
+        // Superviseur (DG uniquement)
         if (executor.roles.cache.has(ROLES.DG)) {
             availableRoles.push({ label: `Poste: Superviseur`, value: ROLES.SUPERVISEUR });
         }
 
-        // Dédoublonner les options
         const uniqueRoles = availableRoles.filter((v, i, a) => a.findIndex(t => t.value === v.value) === i);
 
         if (uniqueRoles.length === 0) {
             return interaction.reply({ content: "⚠️ Vous n'avez aucun rôle à gérer pour ce membre.", ephemeral: true });
         }
 
-        // Création des composants de l'interface (Menu + Bouton Mise à pied si Capitaine+)
-        const components = [];
-
+        // Construction du menu moderne
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId(`select_role_${target.id}`)
-            .setPlaceholder('Choisissez le rôle à ajouter ou enlever')
+            .setPlaceholder('Cliquez ici pour sélectionner un rôle à attribuer / enlever...')
             .addOptions(uniqueRoles.map(r => ({
                 label: r.label,
-                description: target.roles.cache.has(r.value) ? '▶ Actuellement POSSÉDÉ (Cliquer pour ENLEVER)' : '▶ Actuellement NON POSSÉDÉ (Cliquer pour AJOUTER)',
-                value: r.value
+                description: target.roles.cache.has(r.value) ? 'Status: POSSÉDÉ (Cliquer pour RETIRER)' : 'Status: NON POSSÉDÉ (Cliquer pour AJOUTER)',
+                value: r.value,
+                emoji: target.roles.cache.has(r.value) ? '➖' : '➕'
             })));
 
-        components.push(new ActionRowBuilder().addComponents(selectMenu));
+        const components = [new ActionRowBuilder().addComponents(selectMenu)];
 
-        // Bouton mise à pied
+        // Ajout du Bouton "Mise à pied" si Capitaine+
         const isCapitainePlus = CAPITAINE_PLUS.some(roleId => executor.roles.cache.has(roleId));
         if (isCapitainePlus) {
-            const btn = new ButtonBuilder()
+            const btnMap = new ButtonBuilder()
                 .setCustomId(`btn_map_${target.id}`)
                 .setLabel('Mise à pied')
-                .setStyle(ButtonStyle.Danger);
-            components.push(new ActionRowBuilder().addComponents(btn));
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji('⚠️');
+            
+            components.push(new ActionRowBuilder().addComponents(btnMap));
         }
 
-        // Tout le message est ÉPHÉMÈRE (privé)
+        // Embed principal interactif
+        const mainEmbed = new EmbedBuilder()
+            .setColor(0x0055A5) // Bleu Sûreté du Québec
+            .setTitle("🛡️ Panneau de Gestion Hiérarchique")
+            .setDescription(`Gestion du dossier de la personne suivante : ${target}`)
+            .addFields(
+                { name: "Sûreté du Québec", value: "✅ Validé", inline: true },
+                { name: "Opérateur", value: `${executor}`, inline: true }
+            )
+            .setFooter({ text: "Sûreté du Québec • Système RH Éphémère" })
+            .setTimestamp();
+
         await interaction.reply({
-            content: `⚙️ **Gestion des rôles pour ${target} :**\nChoisissez une action dans le menu ci-dessous.`,
+            embeds: [mainEmbed],
             components: components,
             ephemeral: true
         });
     }
 
-    // --- 5. ACTION MENU DÉROULANT : AJOUTER / ENLEVER LE RÔLE SELECTIONNÉ ---
+    // --- ACTION MENU DÉROULANT : AJOUTER OU RETIRER UN RÔLE ---
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_role_')) {
         const targetId = interaction.customId.split('_')[2];
         const selectedRoleId = interaction.values[0];
         const targetMember = await interaction.guild.members.fetch(targetId);
 
         if (!targetMember) {
-            return interaction.reply({ content: "⚠️ Membre introuvable.", ephemeral: true });
+            return interaction.reply({ content: "⚠️ Membre introuvable sur le serveur.", ephemeral: true });
         }
+
+        const embedResult = new EmbedBuilder().setTimestamp();
 
         if (targetMember.roles.cache.has(selectedRoleId)) {
             // Retirer le rôle
             await targetMember.roles.remove(selectedRoleId);
-            await interaction.reply({
-                content: `✅ Le rôle <@&${selectedRoleId}> a été **retiré** à ${targetMember}.`,
-                ephemeral: true
-            });
+            embedResult
+                .setColor(0xE67E22)
+                .setTitle("Rôle Retiré")
+                .setDescription(`Le rôle <@&${selectedRoleId}> a été **retiré** avec succès à ${targetMember}.`);
         } else {
             // Ajouter le rôle
             await targetMember.roles.add(selectedRoleId);
-            await interaction.reply({
-                content: `✅ Le rôle <@&${selectedRoleId}> a été **ajouté** à ${targetMember}.`,
-                ephemeral: true
-            });
+            embedResult
+                .setColor(0x57F287)
+                .setTitle("Rôle Attribué")
+                .setDescription(`Le rôle <@&${selectedRoleId}> a été **ajouté** avec succès à ${targetMember}.`);
         }
+
+        await interaction.reply({ embeds: [embedResult], ephemeral: true });
     }
 
-    // --- 6. ACTION BOUTON MISE À PIED ---
+    // --- ACTION BOUTON MISE À PIED ---
     if (interaction.isButton() && interaction.customId.startsWith('btn_map_')) {
         const targetId = interaction.customId.split('_')[2];
-        
+
         const userSelectRow = new ActionRowBuilder().addComponents(
             new UserSelectMenuBuilder()
                 .setCustomId(`confirm_map_${targetId}`)
-                .setPlaceholder('Sélectionnez la personne à mettre à pied')
+                .setPlaceholder('Sélectionnez la personne à mettre à pied...')
         );
 
+        const mapEmbed = new EmbedBuilder()
+            .setColor(0xED4245)
+            .setTitle("🚨 Procédure de Mise à Pied")
+            .setDescription("Veuillez sélectionner ci-dessous l'agent concerné pour confirmer le retrait de l'ensemble de ses rôles.");
+
         await interaction.reply({
-            content: "🚨 **Sélectionnez la personne à qui retirer TOUS les rôles :**",
+            embeds: [mapEmbed],
             components: [userSelectRow],
             ephemeral: true
         });
     }
 
-    // --- 7. ACTION CONFIRMATION MISE À PIED ---
+    // --- CONFIRMATION DE MISE À PIED ---
     if (interaction.isUserSelectMenu() && interaction.customId.startsWith('confirm_map_')) {
         const selectedUserId = interaction.values[0];
         const targetMember = await interaction.guild.members.fetch(selectedUserId);
@@ -243,27 +262,42 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
+            // Retrait de tous les rôles personnalisés
             const rolesToRemove = targetMember.roles.cache.filter(role => role.id !== interaction.guild.id);
             await targetMember.roles.remove(rolesToRemove);
 
-            await interaction.reply({
-                content: `💥 **Mise à pied effectuée** : Tous les rôles ont été retirés à ${targetMember}.`,
-                ephemeral: true
-            });
+            const confirmEmbed = new EmbedBuilder()
+                .setColor(0x992D22)
+                .setTitle("💥 Mise à pied Confirmée")
+                .setDescription(`La totalité des rôles a été retirée au membre ${targetMember}.`)
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [confirmEmbed], ephemeral: true });
+
+            // Publication d'une annonce publique dans le salon courant
+            const publicAnnounce = new EmbedBuilder()
+                .setColor(0x992D22)
+                .setTitle("📢 Avis Officiel - Mise à Pied")
+                .setDescription(`Le membre **${targetMember.user.tag}** a subit une mise à pied administrative. Ses accès et rôles ont été révoqués par ${interaction.member}.`)
+                .setTimestamp();
+
+            await interaction.channel.send({ embeds: [publicAnnounce] });
+
         } catch (error) {
             console.error(error);
             await interaction.reply({
-                content: "❌ Impossible de retirer les rôles (Vérifiez la hauteur du rôle du Bot sur Discord).",
+                content: "❌ Impossible de procéder à la mise à pied. Assurez-vous que le rôle du bot se situe au-dessus de tous les rôles de l'agent dans les paramètres du serveur.",
                 ephemeral: true
             });
         }
     }
 });
 
-// --- 8. CONNEXION ---
+// --- 5. CONNEXION DU BOT ---
 const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
+
 if (!token) {
-    console.error("❌ ERREUR: Aucun token trouvé dans DISCORD_TOKEN ou BOT_TOKEN.");
+    console.error("❌ ERREUR: Aucun token trouvé dans la variable DISCORD_TOKEN ou BOT_TOKEN.");
     process.exit(1);
 }
 
