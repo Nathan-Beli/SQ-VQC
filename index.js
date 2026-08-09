@@ -105,7 +105,7 @@ client.on('interactionCreate', async interaction => {
         const hasPermission = ALL_EXECUTORS.some(roleId => executor.roles.cache.has(roleId));
         if (!hasPermission) {
             return interaction.reply({ 
-                content: "❌ **Vous n'avez pas la permission de faite cette commande.**", 
+                content: "❌ **Vous n'avez pas la permission de faire cette commande.**", 
                 ephemeral: true 
             });
         }
