@@ -19,7 +19,12 @@ http.createServer((req, res) => {
 
 // --- 1. CLIENT DISCORD ---
 const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ]
 });
 
 // --- 2. LISTE DES IDS DE RÔLES ---
@@ -113,7 +118,49 @@ client.on('clientReady', async () => {
     }
 });
 
-// --- 4. GESTION DES INTERACTIONS ---
+// --- 4. GESTION DES MESSAGES TEXTUELS (!ID) ---
+client.on('messageCreate', async message => {
+    if (message.author.bot) return;
+
+    if (message.content.toLowerCase() === '!id') {
+        // Supprime le message de commande de l'utilisateur pour garder le salon propre
+        if (message.deletable) {
+            await message.delete().catch(() => {});
+        }
+
+        // Vérification des permissions
+        const hasPermission = ALL_EXECUTORS.some(roleId => message.member.roles.cache.has(roleId));
+        if (!hasPermission) {
+            const reply = await message.channel.send(`❌ <@${message.author.id}>, vous n'avez pas la permission de consulter la liste des IDs.`);
+            setTimeout(() => reply.delete().catch(() => {}), 5000);
+            return;
+        }
+
+        // Formatage de la liste des IDs
+        let formattedList = "🆔 **Liste des IDs de Rôles de la SQ**\n\n";
+        for (const [key, value] of Object.entries(ROLES)) {
+            formattedList += `• **${key}** : \`${value}\` (<@&${value}>)\n`;
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor(0x0055A5)
+            .setTitle("📋 Configuration des IDs de Rôles")
+            .setDescription(formattedList)
+            .setTimestamp();
+
+        // Envoie un message temporaire uniquement visible/supprimé après 15 secondes pour l'utilisateur
+        const tempMsg = await message.channel.send({
+            content: `📑 <@${message.author.id}>, voici la liste des IDs (ce message s'autodétruira dans 15s) :`,
+            embeds: [embed]
+        });
+
+        setTimeout(() => {
+            tempMsg.delete().catch(() => {});
+        }, 15000);
+    }
+});
+
+// --- 5. GESTION DES INTERACTIONS ---
 client.on('interactionCreate', async interaction => {
     
     // --- COMMAND /PROMOTION ---
@@ -353,7 +400,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// --- 5. CONNEXION DU BOT ---
+// --- 6. CONNEXION DU BOT ---
 const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
 if (!token) {
     console.error("❌ ERREUR: Aucun token trouvé dans DISCORD_TOKEN ou BOT_TOKEN.");
