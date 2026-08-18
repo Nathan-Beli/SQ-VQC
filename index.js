@@ -119,7 +119,6 @@ function getMemberGradeRank(member) {
 // Fonction pour récupérer la liste de tous les grades qu'un membre peut attribuer
 function getAllowedGradePromotions(executorMember) {
     if (executorMember.roles.cache.has(ROLES.DG)) {
-        // Le DG peut tout promouvoir jusqu'à Inspecteur-Chef
         return GRADE_HIERARCHY.slice(1, GRADE_HIERARCHY.indexOf(ROLES.DG)).map(roleId => ({
             value: roleId,
             label: GRADE_LABELS[roleId] || "Grade"
@@ -139,7 +138,6 @@ function getAllowedGradePromotions(executorMember) {
 
     if (maxTargetRankIndex === -1) return [];
 
-    // Récupère le grade minimal gérable (Agent) jusqu'au grade maximal autorisé
     const minRankIndex = GRADE_HIERARCHY.indexOf(ROLES.AGENT);
     const allowedRoles = [];
 
@@ -259,7 +257,7 @@ client.on('interactionCreate', async interaction => {
 
         const buttonsToCreate = [];
 
-        // 1. Boutons de Grades en cascade (Tous les grades autorisés jusqu'au plafond de l'exécuteur)
+        // 1. Boutons de Grades en cascade
         const allowedGradePromotions = getAllowedGradePromotions(executor);
         for (const gradeOption of allowedGradePromotions) {
             buttonsToCreate.push({ label: gradeOption.label, value: gradeOption.value, isGrade: true });
@@ -396,7 +394,7 @@ client.on('interactionCreate', async interaction => {
         );
 
         await interaction.reply({
-            content: "🚨 **Sélectionnez la personne à qui vous souhaitez retirer TOUS les rôles :**",
+            content: "🚨 **Sélectionnez la personne à qui vous souhaitez retirer TOUS les rôles SQ :**",
             components: [userSelectRow],
             ephemeral: true
         });
@@ -416,18 +414,23 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
-            const rolesToRemove = targetMember.roles.cache.filter(role => role.id !== interaction.guild.id);
+            // Extraction de tous les IDs figurant dans l'objet ROLES
+            const sqRoleIds = Object.values(ROLES);
+
+            // Filtrage : supprime uniquement les rôles appartement à la SQ
+            const rolesToRemove = targetMember.roles.cache.filter(role => sqRoleIds.includes(role.id));
+            
             await targetMember.roles.remove(rolesToRemove);
 
             await interaction.reply({
-                content: `💥 **Mise à pied effectuée** : Tous les rôles ont été retirés à ${targetMember}.`,
+                content: `💥 **Mise à pied effectuée** : Tous les rôles **SQ** ont été retirés à ${targetMember}.`,
                 ephemeral: true
             });
 
             const publicAnnounce = new EmbedBuilder()
                 .setColor(0x992D22)
                 .setTitle("📢 Avis Officiel - Mise à Pied")
-                .setDescription(`Le membre **${targetMember.user.tag}** a subi une mise à pied administrative. Ses accès et rôles ont été révoqués par ${interaction.member}.`)
+                .setDescription(`Le membre **${targetMember.user.tag}** a subi une mise à pied administrative. Ses accès et rôles SQ ont été révoqués par ${interaction.member}.`)
                 .setTimestamp();
 
             await interaction.channel.send({ embeds: [publicAnnounce] });
