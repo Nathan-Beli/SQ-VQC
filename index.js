@@ -29,26 +29,26 @@ const client = new Client({
 
 // --- 2. LISTE DES IDS DE RÔLES ---
 const ROLES = {
-    SQ: "1534277079322071060",
-    DG: "1534559869959409785",
-    DA: "1534559820139598035",
-    INSPECTEUR_CHEF: "1534559797549076520",
-    INSPECTEUR: "1534559776443207901",
-    CAPITAINE: "1534559750027612291",
-    LIEUTENANT: "1534559733300854794",
-    SERGENT: "1534559707438649494",
-    CHEF_EQUIPE: "1534559291057377290",
-    AGENT: "1534559270870450319",
-    CADET: "1534559249168859137",
-    SUPERVISEUR: "1535988500824989757",
+    SQ: "1534277079322071060",               // @Sûreté du Québec
+    DG: "1534559869959409785",               // @Directeur Général
+    DA: "1534559820139598035",               // @Directeur Adjoint
+    INSPECTEUR_CHEF: "1534559797549076520",  // @Inspecteur-Chef
+    INSPECTEUR: "1534559776443207901",       // @Inspecteur
+    CAPITAINE: "1534559750027612291",        // @Capitaine
+    LIEUTENANT: "1534559733300854794",       // @Lieutenant
+    SERGENT: "1534559707438649494",          // @Sergent
+    CHEF_EQUIPE: "1534559291057377290",      // @Chef d'équipe
+    AGENT: "1534559270870450319",            // @Agent
+    CADET: "1534559249168859137",            // @Cadet
+    SUPERVISEUR: "1535988500824989757",       // @Superviseur
     
     // Subdivisions & Chefs
-    CHEF_GTI: "1535998738311422075",
-    GTI: "1535988386165162034",
-    CHEF_ENQUETEUR: "1535998948605567026",
-    ENQUETEUR: "1535988422252961802",
-    CHEF_DCM: "1535998994474340382",
-    DCM: "1535988465274064958"
+    CHEF_GTI: "1535998738311422075",         // @Chef GTI
+    GTI: "1535988386165162034",              // @GTI
+    CHEF_ENQUETEUR: "1535998948605567026",   // @Chef Enqueteur
+    ENQUETEUR: "1535988422252961802",        // @Enqueteur
+    CHEF_DCM: "1535998994474340382",         // @Chef DCM
+    DCM: "1535988465274064958"               // @DCM (Division Crimes Majeurs)
 };
 
 // Hiérarchie des grades (du plus BAS au plus HAUT) pour comparer les rangs
@@ -65,15 +65,30 @@ const GRADE_HIERARCHY = [
     ROLES.DG
 ];
 
-// Matrice des autorisations de promotion
-const PROMOTION_MAP = [
-    { executor: ROLES.SERGENT, targetRole: ROLES.AGENT, label: "Agent" },
-    { executor: ROLES.LIEUTENANT, targetRole: ROLES.CHEF_EQUIPE, label: "Chef d'équipe" },
-    { executor: ROLES.CAPITAINE, targetRole: ROLES.SERGENT, label: "Sergent" },
-    { executor: ROLES.INSPECTEUR, targetRole: ROLES.LIEUTENANT, label: "Lieutenant" },
-    { executor: ROLES.INSPECTEUR_CHEF, targetRole: ROLES.CAPITAINE, label: "Capitaine" },
-    { executor: ROLES.DA, targetRole: ROLES.INSPECTEUR, label: "Inspecteur" }
+// Matrice des promotions : Chaque exécuteur autorise la promotion vers son niveau direct ET tous les niveaux inférieurs autorisés
+const PROMOTION_RULES = [
+    { executor: ROLES.SERGENT, maxTargetRole: ROLES.AGENT },
+    { executor: ROLES.LIEUTENANT, maxTargetRole: ROLES.CHEF_EQUIPE },
+    { executor: ROLES.CAPITAINE, maxTargetRole: ROLES.SERGENT },
+    { executor: ROLES.INSPECTEUR, maxTargetRole: ROLES.LIEUTENANT },
+    { executor: ROLES.INSPECTEUR_CHEF, maxTargetRole: ROLES.CAPITAINE },
+    { executor: ROLES.DA, maxTargetRole: ROLES.INSPECTEUR },
+    { executor: ROLES.DG, maxTargetRole: ROLES.INSPECTEUR_CHEF }
 ];
+
+// Libellés lisibles pour chaque grade
+const GRADE_LABELS = {
+    [ROLES.CADET]: "Cadet",
+    [ROLES.AGENT]: "Agent",
+    [ROLES.CHEF_EQUIPE]: "Chef d'équipe",
+    [ROLES.SERGENT]: "Sergent",
+    [ROLES.LIEUTENANT]: "Lieutenant",
+    [ROLES.CAPITAINE]: "Capitaine",
+    [ROLES.INSPECTEUR]: "Inspecteur",
+    [ROLES.INSPECTEUR_CHEF]: "Inspecteur-Chef",
+    [ROLES.DA]: "Directeur Adjoint",
+    [ROLES.DG]: "Directeur Général"
+};
 
 const SUBDIVISIONS_MAP = [
     { executor: ROLES.CHEF_GTI, role: ROLES.GTI, label: "Sub. GTI" },
@@ -88,7 +103,7 @@ const CHEFS_SUBDIVISIONS = [
 ];
 
 const CAPITAINE_PLUS = [ROLES.CAPITAINE, ROLES.INSPECTEUR, ROLES.INSPECTEUR_CHEF, ROLES.DA, ROLES.DG];
-const ALL_EXECUTORS = [...new Set([...PROMOTION_MAP.map(p => p.executor), ...SUBDIVISIONS_MAP.map(s => s.executor), ROLES.DG])];
+const ALL_EXECUTORS = [...new Set([...PROMOTION_RULES.map(p => p.executor), ...SUBDIVISIONS_MAP.map(s => s.executor), ROLES.DG])];
 
 // Fonction d'aide pour obtenir l'indice du grade le plus élevé d'un membre
 function getMemberGradeRank(member) {
@@ -99,6 +114,44 @@ function getMemberGradeRank(member) {
         }
     }
     return highestRank;
+}
+
+// Fonction pour récupérer la liste de tous les grades qu'un membre peut attribuer
+function getAllowedGradePromotions(executorMember) {
+    if (executorMember.roles.cache.has(ROLES.DG)) {
+        // Le DG peut tout promouvoir jusqu'à Inspecteur-Chef
+        return GRADE_HIERARCHY.slice(1, GRADE_HIERARCHY.indexOf(ROLES.DG)).map(roleId => ({
+            value: roleId,
+            label: GRADE_LABELS[roleId] || "Grade"
+        }));
+    }
+
+    let maxTargetRankIndex = -1;
+
+    for (const rule of PROMOTION_RULES) {
+        if (executorMember.roles.cache.has(rule.executor)) {
+            const ruleTargetIndex = GRADE_HIERARCHY.indexOf(rule.maxTargetRole);
+            if (ruleTargetIndex > maxTargetRankIndex) {
+                maxTargetRankIndex = ruleTargetIndex;
+            }
+        }
+    }
+
+    if (maxTargetRankIndex === -1) return [];
+
+    // Récupère le grade minimal gérable (Agent) jusqu'au grade maximal autorisé
+    const minRankIndex = GRADE_HIERARCHY.indexOf(ROLES.AGENT);
+    const allowedRoles = [];
+
+    for (let i = minRankIndex; i <= maxTargetRankIndex; i++) {
+        const roleId = GRADE_HIERARCHY[i];
+        allowedRoles.push({
+            value: roleId,
+            label: GRADE_LABELS[roleId] || "Grade"
+        });
+    }
+
+    return allowedRoles;
 }
 
 // --- 3. INITIALISATION DU BOT ---
@@ -123,12 +176,10 @@ client.on('messageCreate', async message => {
     if (message.author.bot) return;
 
     if (message.content.toLowerCase() === '!id') {
-        // Supprime le message de commande de l'utilisateur pour garder le salon propre
         if (message.deletable) {
             await message.delete().catch(() => {});
         }
 
-        // Vérification des permissions
         const hasPermission = ALL_EXECUTORS.some(roleId => message.member.roles.cache.has(roleId));
         if (!hasPermission) {
             const reply = await message.channel.send(`❌ <@${message.author.id}>, vous n'avez pas la permission de consulter la liste des IDs.`);
@@ -136,7 +187,6 @@ client.on('messageCreate', async message => {
             return;
         }
 
-        // Formatage de la liste des IDs
         let formattedList = "🆔 **Liste des IDs de Rôles de la SQ**\n\n";
         for (const [key, value] of Object.entries(ROLES)) {
             formattedList += `• **${key}** : \`${value}\` (<@&${value}>)\n`;
@@ -148,7 +198,6 @@ client.on('messageCreate', async message => {
             .setDescription(formattedList)
             .setTimestamp();
 
-        // Envoie un message temporaire uniquement visible/supprimé après 15 secondes pour l'utilisateur
         const tempMsg = await message.channel.send({
             content: `📑 <@${message.author.id}>, voici la liste des IDs (ce message s'autodétruira dans 15s) :`,
             embeds: [embed]
@@ -172,7 +221,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable sur le serveur.", ephemeral: true });
         }
 
-        // 🛑 SÉCURITÉ 1 : Interdiction de s'exécuter la commande sur SOI-MÊME
+        // 🛑 SÉCURITÉ 1 : Interdiction sur soi-même
         if (executor.id === target.id) {
             return interaction.reply({ 
                 content: "❌ **Vous ne pouvez pas vous attribuer une promotion à vous-même !**", 
@@ -180,7 +229,7 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
-        // Vérification des permissions de base
+        // Vérification des permissions
         const hasPermission = ALL_EXECUTORS.some(roleId => executor.roles.cache.has(roleId));
         if (!hasPermission) {
             return interaction.reply({ 
@@ -193,7 +242,6 @@ client.on('interactionCreate', async interaction => {
         const executorRank = getMemberGradeRank(executor);
         const targetRank = getMemberGradeRank(target);
 
-        // Si la personne qui exécute n'est pas DG et que la cible a un grade >= à l'exécuteur
         if (!executor.roles.cache.has(ROLES.DG) && targetRank >= executorRank && targetRank !== -1) {
             return interaction.reply({ 
                 content: "❌ **Vous ne pouvez pas modifier les rôles d'un membre ayant un grade égal ou supérieur au vôtre.**", 
@@ -209,14 +257,12 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
-        // Récupération des rôles gérables par cet exécuteur
         const buttonsToCreate = [];
 
-        // 1. Boutons de Grades
-        for (const p of PROMOTION_MAP) {
-            if (executor.roles.cache.has(p.executor) || executor.roles.cache.has(ROLES.DG)) {
-                buttonsToCreate.push({ label: p.label, value: p.targetRole, isGrade: true });
-            }
+        // 1. Boutons de Grades en cascade (Tous les grades autorisés jusqu'au plafond de l'exécuteur)
+        const allowedGradePromotions = getAllowedGradePromotions(executor);
+        for (const gradeOption of allowedGradePromotions) {
+            buttonsToCreate.push({ label: gradeOption.label, value: gradeOption.value, isGrade: true });
         }
 
         // 2. Boutons de Subdivisions
@@ -254,7 +300,7 @@ client.on('interactionCreate', async interaction => {
             
             let style = ButtonStyle.Secondary;
             if (hasRole) {
-                style = ButtonStyle.Success; // Vert s'il le possède
+                style = ButtonStyle.Success; // Vert
             } else if (b.isGrade) {
                 style = ButtonStyle.Primary; // Bleu pour les grades
             }
@@ -306,7 +352,6 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ Membre introuvable.", ephemeral: true });
         }
 
-        // Sécurité lors du clic : vérifier à nouveau que ce n'est pas soi-même
         if (interaction.member.id === targetMember.id) {
             return interaction.reply({ content: "❌ Action impossible sur vous-même.", ephemeral: true });
         }
@@ -314,14 +359,12 @@ client.on('interactionCreate', async interaction => {
         const hasRole = targetMember.roles.cache.has(roleId);
 
         if (hasRole) {
-            // Retirer le rôle
             await targetMember.roles.remove(roleId);
             return interaction.reply({
                 content: `➖ Le rôle <@&${roleId}> a été **retiré** à ${targetMember}.`,
                 ephemeral: true
             });
         } else {
-            // Si c'est un GRADE : Retrait des anciens grades sans toucher aux subdivisions
             if (isGrade) {
                 const oldGrades = targetMember.roles.cache.filter(role => GRADE_HIERARCHY.includes(role.id));
                 for (const [id] of oldGrades) {
@@ -329,7 +372,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Ajouter le nouveau rôle
             await targetMember.roles.add(roleId);
 
             return interaction.reply({
